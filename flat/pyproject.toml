@@ -1,0 +1,7 @@
+[project]
+name = "flat"
+version = "0.1.0"
+description = "Flat languages"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
