@@ -1,16 +1,29 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import reduce
 from itertools import product
 from typing import override
 
+from flat.peekiter import PeekIterator, peek
 
-class NTerm(str): ...
+
+class NTerm(str):
+    @override
+    def __repr__(self) -> str:
+        return f"NTerm({str(self)})"
 
 
-class TTerm(str): ...
+class TTerm(str):
+    @override
+    def __repr__(self) -> str:
+        return f"TTerm({str(self)})"
+
+
+def TTerms(*terms: str) -> Iterable[TTerm]:
+    return sorted(TTerm(t) for t in terms)
 
 
 EPSILON = NULLSTR = TTerm("ϵ")
+EOF = TTerm("$")
 
 
 class Production:
@@ -24,6 +37,9 @@ class Production:
     def __str__(self) -> str:
         return f"{self.lhs} = {'·'.join(self.rhs)}"
 
+    def __repr__(self) -> str:
+        return str(self)
+
     def is_empty(self) -> bool:
         return len(self.rhs) == 1 and self.rhs[0] == EPSILON
 
@@ -32,7 +48,7 @@ class LR0Item:
     prod: Production
     prod_idx: int
     point: int
-    
+
     def __init__(self, prod: Production, prod_idx: int, point: int) -> None:
         self.prod = prod
         self.prod_idx = prod_idx
@@ -41,21 +57,27 @@ class LR0Item:
     @override
     def __hash__(self) -> int:
         return hash((self.prod_idx, self.point))
-    
+
     @override
     def __eq__(self, value: object, /) -> bool:
         match value:
             case LR0Item(prod_idx=idx, point=p):
                 return self.prod_idx == idx and self.point == p
             case _:
-                raise TypeError(f"Can not determine equality of {type(self)} and {type{value}}.")
+                raise TypeError(
+                    f"Can not determine equality of {type(self)} and {type(value)}."
+                )
 
     @override
     def __str__(self) -> str:
         if self.prod.is_empty():
             return f"{self.prod.lhs} -> ."
         else:
-            rhs = self.prod.rhs[0:self.point] + [TTerm(".")] + self.prod.rhs[self.point:]
+            rhs = (
+                self.prod.rhs[0 : self.point]
+                + [TTerm(".")]
+                + self.prod.rhs[self.point :]
+            )
             return f"{self.prod.lhs} -> {''.join(rhs)}"
 
     @override
@@ -66,34 +88,35 @@ class LR0Item:
 class Grammar:
     nonterms: set[NTerm]
     terms: set[TTerm]
-    prods: set[Production]
     start: NTerm
+    prods: set[Production]
 
     def __init__(
-        self, N: Iterable[NTerm], T: Iterable[TTerm], P: Iterable[Production], S: NTerm
+        self, N: Iterable[NTerm], T: Iterable[TTerm], S: NTerm, P: Iterable[Production]
     ) -> None:
-        
-        # assert S in N and reduce(bool.__or__, (S == p.lhs for p in P))
+
+        assert S in N and reduce(bool.__or__, (S == p.lhs for p in P))
 
         self.nonterms = set(N)
         self.terms = set(T)
-        self.prods = set(P)
         self.start = S
+        self.prods = set(P)
 
         assert self.terms.isdisjoint(self.nonterms)
 
+    @override
     def __str__(self) -> str:
-        p1 = sorted(map(str, self.prods))
+        p1 = list(sorted(map(str, self.prods)))
         p2 = [p1[0]]
         for i, j in zip(p1[:-1], p1[1:]):
             il, ir = i.split(" = ")
-            jl, jr = j.split(" = ") 
+            jl, jr = j.split(" = ")
             if il == jl:
-                p2.append(" "*len(jl)+" | "+jr)
+                p2.append(" " * len(jl) + " | " + jr)
             else:
                 p2.append(j)
         return "Grammar:\n  " + "\n  ".join(p2)
-    
+
     def lr0_items(self):
         items: list[LR0Item] = []
 
@@ -106,73 +129,76 @@ class Grammar:
                 items.append(LR0Item(p, i, j))
         return items
 
-def _flatten_term(symb: NTerm | TTerm, *states: int) -> NTerm | TTerm:
-    return type(symb)(f"{symb}({','.join(map(str, states))})")
+    def FIRST(self, nt: NTerm | Production) -> set[TTerm]:
+        if isinstance(nt, Production):
+            match nt.rhs[0]:
+                case TTerm() as a:
+                    return {a}
+                case NTerm() as A:
+                    return self.FIRST(A)
+        else:
+            s: set[TTerm] = set()
+            return s.union(*(self.FIRST(p) for p in self.prods if p.lhs == nt))
 
+    def get_productions(self, A: NTerm) -> set[Production]:
+        return {p for p in self.prods if p.lhs == A}
 
+    def _chose_production(self, A: NTerm, a: TTerm) -> Production | None:
+        for p in self.get_productions(A):
+            if a in self.FIRST(p):
+                return p
 
-def flatten(p: int, q: int, G: Grammar):
-    fa = FAGeneric(p, q)
+        for p in self.get_productions(A):
+            if EPSILON in self.FIRST(p):
+                return p
 
-    N1 = {
-        _flatten_term(A+"⊕", i, j)
-        for A, i, j in product(G.nonterms, fa.S(), fa.S())
-        if j in fa.closure(i)
-    }
+    def recognize(self, scanner: PeekIterator[TTerm], start: NTerm | None = None):
+        """LL(1)"""
+        if start is None:
+            p = Production(NTerm("<START>"), self.start, EOF)
+        else:
+            p = self._chose_production(start, peek(scanner))
 
-    N2 = {
-        _flatten_term(a+"⊕", i, j)
-        for a, i, j in product(G.terms, fa.S(), fa.S())
-        if j in fa.closure(i)
-    }
+        if p is None:
+            raise Exception("Could not find production")
 
-    N3 = {
-        _flatten_term(NTerm(EPSILON+"⊕"), i, j) for i, j in product(fa.S(), fa.S()) if j in fa.closure(i)
-    }
+        print(p.lhs + "(", end="")
+        for symb in p.rhs:
+            match symb:
+                case TTerm("ϵ"):
+                    print("ϵ", end="")
+                    continue
+                case TTerm("$"):
+                    if (t := next(scanner, None)) is not None:
+                        raise Exception(f"Expected EOF but found '{t}'")
+                    else:
+                        print("$", end="")
 
-    N: set[NTerm] = set.union(N1, N2, N3)
-
-    P1 = {
-        Production(_flatten_term(p.lhs+"⊕", i, j), *map(lambda x: _flatten_term(x, i, j),  p.rhs)) for p, i, j in product(G.prods, fa.S(), fa.S()) if j in fa.closure(i)
-    }
-
-    P2 = {
-        Production(_flatten_term(NTerm(a+"⊕"), i, j), *(_flatten_term("ϵ⊕", i, i_1), _flatten_term(a, i_1), _flatten_term("ϵ⊕", i_2, j)))
-        for a, i, j, i_1, i_2 in product(G.terms, fa.S(), fa.S(), fa.S(), fa.S())
-        if j in fa.closure(i) and i_1 in fa.closure(i) and i_2 == fa.loop_succ(i_1) and j in fa.closure(i_2)}
-
-    P31 = {
-        Production(_flatten_term("ϵ⊕", i, j), _flatten_term("ϵ", i), _flatten_term("ϵ⊕", k, j))
-        for i, j, k in product(fa.S(), fa.S(), fa.S())
-        if k == fa.loop_succ(i) and j in fa.closure(k)
-    }
-
-    P32 = {Production(_flatten_term("ϵ⊕", i, i), EPSILON) for i in fa.S()}
-
-    
-    P4 = {
-        Production(_flatten_term(A, i, fa.entry_succ(i)), EPSILON)
-        for A, i in product(G.nonterms, fa.non_acc_entries())
-    }
-
-
-    P = set.union(P1, P2, P31, P32, P4)
-
-    T = {f"{a}({i})" for a, i in product(G.terms.union({EPSILON}), fa.S())}.union({EPSILON})
-    S = NTerm(f"S(1,{len(fa)})")
-
-    return Grammar(N, T, P, S)
+                case TTerm() as a:
+                    if a != EPSILON and (
+                        (t := next(scanner)) != a or print(t, end="") is not None
+                    ):
+                        raise Exception(f"Expected '{a}' but found '{t}'")
+                case NTerm() as A:
+                    self.recognize(scanner, A)
+        print(")", end="")
 
 
 if __name__ == "__main__":
-    A = NTerm("S")
-    B = NTerm("S'")
-    a, b, c, d = map(TTerm, "abcd")
-    p1 = Production(A, a, A, d)
-    p2 = Production(A, B)
-    p3 = Production(B, b, B, c)
-    p4 = Production(B, EPSILON)
+    s, sp = NTerm("S"), NTerm("S'")
+    a, b, c, d = TTerms("a", "b", "c", "d")
+    p1 = Production(s, a, s, d)
+    p2 = Production(s, sp)
+    p3 = Production(sp, b, sp, c)
+    p4 = Production(sp, EPSILON)
+    g = Grammar([s, sp], [a, b, c, d], s, [p1, p2, p3, p4])
 
-    g = Grammar([A, B], [a, b, c, d], [p1, p2, p3, p4], A)
-
+    p = "aaa"
+    u = "abcd"
+    s = "ddd"
+    # w = "a" * 10 + "b" * 5 + "c" * 5 + "d" * 10
+    w = p + u + s
+    print(g)
+    g.recognize(PeekIterator(map(TTerm, w)))
+    print()
     print(g.lr0_items())
