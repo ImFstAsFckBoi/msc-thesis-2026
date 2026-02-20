@@ -1,9 +1,7 @@
-import re
 from collections.abc import Iterable
 from functools import reduce
 from itertools import product
-
-from flat.flat import FAGeneric
+from typing import override
 
 
 class NTerm(str): ...
@@ -25,6 +23,44 @@ class Production:
 
     def __str__(self) -> str:
         return f"{self.lhs} = {'·'.join(self.rhs)}"
+
+    def is_empty(self) -> bool:
+        return len(self.rhs) == 1 and self.rhs[0] == EPSILON
+
+
+class LR0Item:
+    prod: Production
+    prod_idx: int
+    point: int
+    
+    def __init__(self, prod: Production, prod_idx: int, point: int) -> None:
+        self.prod = prod
+        self.prod_idx = prod_idx
+        self.point = point
+
+    @override
+    def __hash__(self) -> int:
+        return hash((self.prod_idx, self.point))
+    
+    @override
+    def __eq__(self, value: object, /) -> bool:
+        match value:
+            case LR0Item(prod_idx=idx, point=p):
+                return self.prod_idx == idx and self.point == p
+            case _:
+                raise TypeError(f"Can not determine equality of {type(self)} and {type{value}}.")
+
+    @override
+    def __str__(self) -> str:
+        if self.prod.is_empty():
+            return f"{self.prod.lhs} -> ."
+        else:
+            rhs = self.prod.rhs[0:self.point] + [TTerm(".")] + self.prod.rhs[self.point:]
+            return f"{self.prod.lhs} -> {''.join(rhs)}"
+
+    @override
+    def __repr__(self) -> str:
+        return f"{(self.prod_idx, self.point)} {self.__str__()}"
 
 
 class Grammar:
@@ -57,7 +93,18 @@ class Grammar:
             else:
                 p2.append(j)
         return "Grammar:\n  " + "\n  ".join(p2)
+    
+    def lr0_items(self):
+        items: list[LR0Item] = []
 
+        for i, p in enumerate(self.prods):
+            if p.is_empty():
+                items.append(LR0Item(p, i, 0))
+                continue
+
+            for j in range(len(p.rhs) + 1):
+                items.append(LR0Item(p, i, j))
+        return items
 
 def _flatten_term(symb: NTerm | TTerm, *states: int) -> NTerm | TTerm:
     return type(symb)(f"{symb}({','.join(map(str, states))})")
@@ -118,13 +165,14 @@ def flatten(p: int, q: int, G: Grammar):
 
 
 if __name__ == "__main__":
-    s = NTerm("S")
-    a, b = TTerm("a"), TTerm("b")
+    A = NTerm("S")
+    B = NTerm("S'")
+    a, b, c, d = map(TTerm, "abcd")
+    p1 = Production(A, a, A, d)
+    p2 = Production(A, B)
+    p3 = Production(B, b, B, c)
+    p4 = Production(B, EPSILON)
 
-    p = Production(s, a, b)
+    g = Grammar([A, B], [a, b, c, d], [p1, p2, p3, p4], A)
 
-    g = Grammar([s], [a, b], [p], s)
-
-    gp = flatten(3, 2, g)
-    print(g)
-    print(gp)
+    print(g.lr0_items())
