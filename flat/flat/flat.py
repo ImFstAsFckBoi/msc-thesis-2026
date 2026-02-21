@@ -1,6 +1,9 @@
 from functools import reduce
 from math import ceil
+from symtable import Symbol
 
+from flat.grammar import (EPSILON, Grammar, NontermSym, Production, Symbol,
+                          TermSym)
 from flat.regex import REConcat, REKleene
 
 
@@ -76,7 +79,7 @@ class FAGeneric:
         ) - {i}
 
 
-def _flatten_term(symb: NTerm | TTerm, *states: int) -> NTerm | TTerm:
+def _flatten_term(symb: Symbol, *states: int) -> Symbol:
     return type(symb)(f"{symb}({','.join(map(str, states))})")
 
 
@@ -96,12 +99,12 @@ def flatten(p: int, q: int, G: Grammar):
     }
 
     N3 = {
-        _flatten_term(NTerm(EPSILON + "⊕"), i, j)
+        _flatten_term(NontermSym(EPSILON + "⊕"), i, j)
         for i, j in product(fa.S(), fa.S())
         if j in fa.closure(i)
     }
 
-    N: set[NTerm] = set.union(N1, N2, N3)
+    N: set[NontermSym] = set.union(N1, N2, N3)
 
     P1 = {
         Production(
@@ -114,7 +117,7 @@ def flatten(p: int, q: int, G: Grammar):
 
     P2 = {
         Production(
-            _flatten_term(NTerm(a + "⊕"), i, j),
+            _flatten_term(NontermSym(a + "⊕"), i, j),
             *(
                 _flatten_term("ϵ⊕", i, i_1),
                 _flatten_term(a, i_1),
@@ -148,7 +151,7 @@ def flatten(p: int, q: int, G: Grammar):
     T = {f"{a}({i})" for a, i in product(G.terms.union({EPSILON}), fa.S())}.union(
         {EPSILON}
     )
-    S = NTerm(f"S(1,{len(fa)})")
+    S = NontermSym(f"S(1,{len(fa)})")
 
     return Grammar(N, T, P, S)
 

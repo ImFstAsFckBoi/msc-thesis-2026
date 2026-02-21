@@ -1,37 +1,48 @@
 from collections.abc import Callable, Iterable
-from functools import reduce
+from functools import cache, reduce
 from itertools import product
-from typing import override
+from typing import Type, override
 
 from flat.peekiter import PeekIterator, peek
 
 
-class NTerm(str):
+class NontermSym(str):
     @override
     def __repr__(self) -> str:
         return f"NTerm({str(self)})"
 
 
-class TTerm(str):
+class TermSym(str):
     @override
     def __repr__(self) -> str:
         return f"TTerm({str(self)})"
 
 
-def TTerms(*terms: str) -> Iterable[TTerm]:
-    return sorted(TTerm(t) for t in terms)
+Symbol = NontermSym | TermSym
 
 
-EPSILON = NULLSTR = TTerm("ϵ")
-EOF = TTerm("$")
+def TTerms(*terms: str) -> Iterable[TermSym]:
+    return sorted(TermSym(t) for t in terms)
+
+
+EPSILON = NULLSTR = TermSym("ϵ")
+EOF = TermSym("$")
 
 
 class Production:
-    lhs: NTerm
-    rhs: list[TTerm | NTerm]
+    lhs: NontermSym
+    rhs: list[TermSym | NontermSym]
 
-    def __init__(self, lhs: NTerm | str, *rhs: NTerm | TTerm) -> None:
-        self.lhs = lhs if isinstance(lhs, NTerm) else NTerm(lhs)
+    @override
+    def __eq__(self, value: object, /) -> bool:
+        match value:
+            case Production() as p:
+                return self.lhs == value.lhs and self.rhs == value.rhs
+            case _:
+                raise TypeError("!")
+
+    def __init__(self, lhs: NontermSym | str, *rhs: NontermSym | TermSym) -> None:
+        self.lhs = lhs if isinstance(lhs, NontermSym) else NontermSym(lhs)
         self.rhs = list(rhs)
 
     def __str__(self) -> str:
@@ -43,56 +54,23 @@ class Production:
     def is_empty(self) -> bool:
         return len(self.rhs) == 1 and self.rhs[0] == EPSILON
 
-
-class LR0Item:
-    prod: Production
-    prod_idx: int
-    point: int
-
-    def __init__(self, prod: Production, prod_idx: int, point: int) -> None:
-        self.prod = prod
-        self.prod_idx = prod_idx
-        self.point = point
-
     @override
     def __hash__(self) -> int:
-        return hash((self.prod_idx, self.point))
-
-    @override
-    def __eq__(self, value: object, /) -> bool:
-        match value:
-            case LR0Item(prod_idx=idx, point=p):
-                return self.prod_idx == idx and self.point == p
-            case _:
-                raise TypeError(
-                    f"Can not determine equality of {type(self)} and {type(value)}."
-                )
-
-    @override
-    def __str__(self) -> str:
-        if self.prod.is_empty():
-            return f"{self.prod.lhs} -> ."
-        else:
-            rhs = (
-                self.prod.rhs[0 : self.point]
-                + [TTerm(".")]
-                + self.prod.rhs[self.point :]
-            )
-            return f"{self.prod.lhs} -> {''.join(rhs)}"
-
-    @override
-    def __repr__(self) -> str:
-        return f"{(self.prod_idx, self.point)} {self.__str__()}"
+        return hash((self.lhs, *self.rhs))
 
 
 class Grammar:
-    nonterms: set[NTerm]
-    terms: set[TTerm]
-    start: NTerm
+    nonterms: set[NontermSym]
+    terms: set[TermSym]
+    start: NontermSym
     prods: set[Production]
 
     def __init__(
-        self, N: Iterable[NTerm], T: Iterable[TTerm], S: NTerm, P: Iterable[Production]
+        self,
+        N: Iterable[NontermSym],
+        T: Iterable[TermSym],
+        S: NontermSym,
+        P: Iterable[Production],
     ) -> None:
 
         assert S in N and reduce(bool.__or__, (S == p.lhs for p in P))
@@ -117,33 +95,21 @@ class Grammar:
                 p2.append(j)
         return "Grammar:\n  " + "\n  ".join(p2)
 
-    def lr0_items(self):
-        items: list[LR0Item] = []
-
-        for i, p in enumerate(self.prods):
-            if p.is_empty():
-                items.append(LR0Item(p, i, 0))
-                continue
-
-            for j in range(len(p.rhs) + 1):
-                items.append(LR0Item(p, i, j))
-        return items
-
-    def FIRST(self, nt: NTerm | Production) -> set[TTerm]:
+    def FIRST(self, nt: NontermSym | Production) -> set[TermSym]:
         if isinstance(nt, Production):
             match nt.rhs[0]:
-                case TTerm() as a:
+                case TermSym() as a:
                     return {a}
-                case NTerm() as A:
+                case NontermSym() as A:
                     return self.FIRST(A)
         else:
-            s: set[TTerm] = set()
+            s: set[TermSym] = set()
             return s.union(*(self.FIRST(p) for p in self.prods if p.lhs == nt))
 
-    def get_productions(self, A: NTerm) -> set[Production]:
+    def get_productions(self, A: NontermSym) -> set[Production]:
         return {p for p in self.prods if p.lhs == A}
 
-    def _chose_production(self, A: NTerm, a: TTerm) -> Production | None:
+    def _chose_production(self, A: NontermSym, a: TermSym) -> Production | None:
         for p in self.get_productions(A):
             if a in self.FIRST(p):
                 return p
@@ -152,10 +118,12 @@ class Grammar:
             if EPSILON in self.FIRST(p):
                 return p
 
-    def recognize(self, scanner: PeekIterator[TTerm], start: NTerm | None = None):
+    def recognize(
+        self, scanner: PeekIterator[TermSym], start: NontermSym | None = None
+    ):
         """LL(1)"""
         if start is None:
-            p = Production(NTerm("<START>"), self.start, EOF)
+            p = Production(NontermSym("<START>"), self.start, EOF)
         else:
             p = self._chose_production(start, peek(scanner))
 
@@ -165,27 +133,27 @@ class Grammar:
         print(p.lhs + "(", end="")
         for symb in p.rhs:
             match symb:
-                case TTerm("ϵ"):
+                case TermSym("ϵ"):
                     print("ϵ", end="")
                     continue
-                case TTerm("$"):
+                case TermSym("$"):
                     if (t := next(scanner, None)) is not None:
                         raise Exception(f"Expected EOF but found '{t}'")
                     else:
                         print("$", end="")
 
-                case TTerm() as a:
+                case TermSym() as a:
                     if a != EPSILON and (
                         (t := next(scanner)) != a or print(t, end="") is not None
                     ):
                         raise Exception(f"Expected '{a}' but found '{t}'")
-                case NTerm() as A:
+                case NontermSym() as A:
                     self.recognize(scanner, A)
         print(")", end="")
 
 
 if __name__ == "__main__":
-    s, sp = NTerm("S"), NTerm("S'")
+    s, sp = NontermSym("S"), NontermSym("S'")
     a, b, c, d = TTerms("a", "b", "c", "d")
     p1 = Production(s, a, s, d)
     p2 = Production(s, sp)
@@ -199,6 +167,5 @@ if __name__ == "__main__":
     # w = "a" * 10 + "b" * 5 + "c" * 5 + "d" * 10
     w = p + u + s
     print(g)
-    g.recognize(PeekIterator(map(TTerm, w)))
+    g.recognize(PeekIterator(map(TermSym, w)))
     print()
-    print(g.lr0_items())
